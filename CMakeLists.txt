@@ -138,7 +138,7 @@ link_directories(./lib/x64)
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
 # add_executable(${PROJECT_NAME}_node src/demo_gaze_tobii_node.cpp)
-add_executable(${PROJECT_NAME}_node src/test.cpp)
+add_executable(${PROJECT_NAME}_node src/eye_gaze_node.cpp)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
