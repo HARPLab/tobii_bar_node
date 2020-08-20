@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 2.8.3)
 project(tobii_bar_node)
 
 ## Compile as C++11, supported in ROS Kinetic and newer
-# add_compile_options(-std=c++11)
+add_compile_options(-std=c++11)
 
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
@@ -13,8 +13,7 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 ## System dependencies are found with CMake's conventions
-# find_package(Boost REQUIRED COMPONENTS system)
-find_package(Threads)
+find_package(Boost REQUIRED COMPONENTS system)
 
 ## Uncomment this if the package has a setup.py. This macro ensures
 ## modules and global scripts declared therein get installed
@@ -114,13 +113,11 @@ catkin_package(
 
 ## Specify additional locations of header files
 ## Your package locations should be listed before other locations
-include_directories(./include)
+include_directories(include)
 include_directories(
 # include
   ${catkin_INCLUDE_DIRS}
 )
-
-link_directories(./lib/x64)
 
 ## Declare a C++ library
 # add_library(${PROJECT_NAME}
@@ -136,7 +133,7 @@ link_directories(./lib/x64)
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
 # add_executable(${PROJECT_NAME}_node src/demo_gaze_tobii_node.cpp)
-add_executable(${PROJECT_NAME} src/eye_gaze_node.cpp)
+add_executable(${PROJECT_NAME} include/EyeGazeNode.hpp src/eye_gaze_node.cpp)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
