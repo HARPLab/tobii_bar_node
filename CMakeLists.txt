@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 2.8.3)
-project(demo_gaze_tobii)
+project(tobii_bar_node)
 
 ## Compile as C++11, supported in ROS Kinetic and newer
 # add_compile_options(-std=c++11)
@@ -8,8 +8,8 @@ project(demo_gaze_tobii)
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
-  gaze_chatter
   roscpp
+  ibmmpy
 )
 
 ## System dependencies are found with CMake's conventions
@@ -115,13 +115,11 @@ catkin_package(
 ## Specify additional locations of header files
 ## Your package locations should be listed before other locations
 include_directories(./include)
-include_directories(/usr/local/include)
 include_directories(
 # include
   ${catkin_INCLUDE_DIRS}
 )
 
-link_directories(/usr/local/lib)
 link_directories(./lib/x64)
 
 ## Declare a C++ library
@@ -138,7 +136,7 @@ link_directories(./lib/x64)
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
 # add_executable(${PROJECT_NAME}_node src/demo_gaze_tobii_node.cpp)
-add_executable(${PROJECT_NAME}_node src/eye_gaze_node.cpp)
+add_executable(${PROJECT_NAME} src/eye_gaze_node.cpp)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -151,7 +149,7 @@ add_executable(${PROJECT_NAME}_node src/eye_gaze_node.cpp)
 # add_dependencies(${PROJECT_NAME}_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 ## Specify libraries to link a library or executable target against
-target_link_libraries(${PROJECT_NAME}_node
+target_link_libraries(${PROJECT_NAME}
   ${catkin_LIBRARIES} ${CMAKE_SOURCE_DIR}/lib/x64/libtobii_stream_engine.so ${CMAKE_THREAD_LIBS_INIT}
 )
 
