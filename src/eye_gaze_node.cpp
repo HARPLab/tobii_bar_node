@@ -14,7 +14,7 @@ void BasicPublisher::processData(tobii_gaze_point_t const & gaze_point) {
         this->updateOffset();
     }
 
-    ros::Time recv_time = tobiiTimeToRos(gaze_point.timestamp_us);
+    ros::Time recv_time = tobiiTimeToRos(gaze_point.timestamp_us) + this->time_offset;
     ibmmpy::GazeData msg;
     msg.header.stamp = recv_time;
     msg.world_data.push_back(ibmmpy::GazeDataPoint());
@@ -29,7 +29,6 @@ void BasicPublisher::updateOffset() {
     ros::Time ros1 = ros::Time::now();
     ros::Time dev = this->connection.getSystemTime();
     ros::Time ros2 = ros::Time::now();
-
     this->time_offset = ( ros1 - dev ) * 0.5 + (ros2 - dev) * 0.5;
     this->last_sync_time = ros1;
 }
