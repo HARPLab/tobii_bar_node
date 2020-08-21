@@ -3,7 +3,8 @@
 import cv2
 import Tkinter as tk
 import matplotlib.pyplot as plt
-from collections import namedtuple
+import matplotlib.colors as colors
+from collections import deque, namedtuple
 
 
 import rospy
@@ -12,10 +13,9 @@ import cv_bridge
 
 GazePointInfo = namedtuple('GazePointInfo', ['x', 'y', 'time', 'idx'])
 
-
 class GazeImageDraw:
-    __LINGER_TIME__ = rospy.Duration(3.)
-    __RADIUS__ = 10.
+    __LINGER_TIME__ = rospy.Duration(1.)
+    __RADIUS__ = 5
     __COLOR_MAP__ = plt.get_cmap('Reds')
 
     def __init__(self):
@@ -28,42 +28,54 @@ class GazeImageDraw:
         self.canvas.pack(expand=True, fill=tk.BOTH)
 
         self.gaze_sub = rospy.Subscriber('/gaze', GazeData, self.process_gaze)
-        self.timer = rospy.Timer(rospy.Duration(0.1), self.process_timer, oneshot=False)
 
-        self._data = []        
+        self._data = deque() 
+        self._new_data = deque()    
+        self.redraw()
 
     def process_gaze(self, gaze_msg):
-        self._data.extend( ( GazePointInfo(msg.x, msg.y, msg.header.stamp, None) for msg in gaze_msg.world_data ) )
-        self.redraw(gaze_msg.header.stamp)
+        self._new_data.extend( ( GazePointInfo( int(msg.position.x * self.w), int(msg.position.y * self.h), msg.header.stamp, None) for msg in gaze_msg.world_data ) )
 
-    def process_timer(self, evt):
-        self.redraw(evt.current_real)
+    def redraw(self):
+        tm = rospy.get_rostime()
 
-    def redraw(tm):
-        def process_points(pts):
-            for pt in pts:
-                delay = tm - pt.time
+        # clear aged-out points
+        while len(self._data) > 0 and self._data[0].time < tm - GazeImageDraw.__LINGER_TIME__:
+            pt = self._data.popleft()
+            if pt.idx is not None:
+                self.canvas.delete(pt.idx)
+        
+        def get_opts(pt):
+            delay = tm - pt.time
+            fill = colors.rgb2hex(GazeImageDraw.__COLOR_MAP__( 1 - delay.to_sec() / GazeImageDraw.__LINGER_TIME__.to_sec() ))
+            return {'fill': fill}
 
-                if delay > GazeImageDraw.__LINGER_TIME__:
-                    # remove old points
-                    if pt.idx is not None:
-                        self.canvas.delete(pt.idx)
-                        pt.idx = None
-                else:
-                    # get new info
-                    color = GazeImageDraw.__COLOR_MAP__( delay.to_sec() / GazeImageDraw.__LINGER_TIME__.to_sec() )
-                    if pt.idx is None:
-                        pt.idx = self.canvas.create_oval( pt.x - GazeImageDraw.__RADIUS__, pt.y - GazeImageDraw.__RADIUS__, 2*GazeImageDraw.__RADIUS__, 2*GazeImageDraw.__RADIUS__, fill=color )
-                    else:
-                        self.canvas.itemconfig(pt.idx, fill=color)
-                    yield pt
-        self._data = [ process_pts(self._data) ]
-        self.window.update()
+        # update the old points
+        for pt in self._data:
+            self.canvas.itemconfig(pt.idx, **get_opts(pt))
+
+        # add any new points
+        # use a new queue for thread-safety: we can't iterate _new_data in this thread
+        # but pop() is thread-safe
+        while len(self._new_data) > 0:
+            pt = self._new_data.popleft()
+            dims = pt.x - GazeImageDraw.__RADIUS__, pt.y - GazeImageDraw.__RADIUS__, pt.x + GazeImageDraw.__RADIUS__, pt.y + GazeImageDraw.__RADIUS__
+            idx = self.canvas.create_oval(*dims, outline='', **get_opts(pt))
+            self._data.append(GazePointInfo(pt.x, pt.y, pt.time, idx))
+        
+        self.window.after(100, self.redraw)
+
+
+    def run(self):
+        while not rospy.is_shutdown():
+            self.window.update_idletasks()
+            self.window.update()
+
 
 if __name__ == "__main__":
     rospy.init_node("gaze_image_display", anonymous=True)
     gaze_img_draw = GazeImageDraw()
-    rospy.spin()
+    gaze_img_draw.run()
 
 
 
