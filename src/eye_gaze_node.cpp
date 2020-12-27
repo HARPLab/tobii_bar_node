@@ -175,7 +175,7 @@ ros::Time TobiiConnection::getSystemTime() {
 int main(int argc, char* argv[]) {
     // init ROS node
     ros::init(argc, argv, "tobii_bar_node");
-    ros::NodeHandle nh;
+    ros::NodeHandle nh("~");
 
     TobiiConnection connection;
 
