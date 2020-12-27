@@ -1,20 +1,12 @@
 #include "EyeGazeNode.hpp"
 
 
-const ros::Duration BasicPublisher::SYNC_PERIOD(30);
-
 BasicPublisher::BasicPublisher(std::string const & topic_name, TobiiConnection & connection) :
             nh(),
             pub(nh.advertise<ibmmpy::GazeData>(topic_name, 1)),
-            time_offset(0), last_sync_time(0), connection(connection) {}
+            connection(connection) {}
 
-void BasicPublisher::processData(tobii_gaze_point_t const & gaze_point) {
-    ros::Time cur_ros_time = ros::Time::now();
-    if (this->last_sync_time == ros::Time(0) || cur_ros_time - this->last_sync_time > BasicPublisher::SYNC_PERIOD ) {
-        this->updateOffset();
-    }
-
-    ros::Time recv_time = tobiiTimeToRos(gaze_point.timestamp_us) + this->time_offset;
+void BasicPublisher::processData(ros::Time const & recv_time, tobii_gaze_point_t const & gaze_point) {
     ibmmpy::GazeData msg;
     msg.header.stamp = recv_time;
     msg.world_data.push_back(ibmmpy::GazeDataPoint());
@@ -25,12 +17,35 @@ void BasicPublisher::processData(tobii_gaze_point_t const & gaze_point) {
     this->pub.publish(msg);
 }
 
-void BasicPublisher::updateOffset() {
-    ros::Time ros1 = ros::Time::now();
-    ros::Time dev = this->connection.getSystemTime();
-    ros::Time ros2 = ros::Time::now();
-    this->time_offset = ( ros1 - dev ) * 0.5 + (ros2 - dev) * 0.5;
-    this->last_sync_time = ros1;
+BatchingPublisher::BatchingPublisher(std::string const &topic_name, TobiiConnection &connection, ros::Duration const & batch_rate) : nh(),
+            pub(nh.advertise<ibmmpy::GazeData>(topic_name, 1)),
+            connection(connection), cache_ptr(new BatchingPublisher::QueueType()), rate(batch_rate) {}
+
+void BatchingPublisher::processData(ros::Time const &recv_time, tobii_gaze_point_t const &gaze_point) {
+    boost::lock_guard<boost::mutex>(this->cache_mutex);
+    this->cache_ptr->push_back(std::make_pair(recv_time, gaze_point));
+}
+void BatchingPublisher::sendMessage(ros::TimerEvent const & e) {
+    // grab the current cache -- just transfer ownership to this thread and leave the other an empty queue
+    boost::scoped_ptr<QueueType> current_cache(new QueueType());
+    {
+        boost::lock_guard<boost::mutex>(this->cache_mutex);
+        current_cache.swap(this->cache_ptr);
+    }
+
+    // now actually set up the message
+    ibmmpy::GazeData msg;
+    msg.header.stamp = e.current_real;
+    std::transform(current_cache->begin(), current_cache->end(), std::back_inserter(msg.world_data), [] (MessageType const & msg) {
+        ibmmpy::GazeDataPoint data_point;
+        data_point.header.stamp = msg.first;
+        data_point.position.x = msg.second.position_xy[0];
+        data_point.position.y = msg.second.position_xy[1];
+        data_point.confidence = 1.0;
+        return data_point;
+    });
+
+    this->pub.publish(msg);
 }
 
 
@@ -137,6 +152,12 @@ void TobiiConnection::runOnce() {
             throw TobiiException(error);
         }
         this->last_sync_time = cur_time;
+
+        // while we're at it, update the office between tobii system time and ros time
+        ros::Time ros1 = ros::Time::now();
+        ros::Time dev = this->getSystemTime();
+        ros::Time ros2 = ros::Time::now();
+        this->time_offset = (ros1 - dev) * 0.5 + (ros2 - dev) * 0.5;
     }
 }
 
@@ -154,11 +175,22 @@ ros::Time TobiiConnection::getSystemTime() {
 int main(int argc, char* argv[]) {
     // init ROS node
     ros::init(argc, argv, "tobii_bar_node");
-    ros::NodeHandle n;
+    ros::NodeHandle nh;
 
     TobiiConnection connection;
-    BasicPublisher basic_pub("gaze_data", connection);
-    basic_pub.doSetup();
+
+    // apparently i forgot how to scope c++ in a way that doesn't suck
+    boost::scoped_ptr<BasicPublisher> basic_ptr;
+    boost::scoped_ptr<BatchingPublisher> batching_ptr;
+
+    double pub_rate;
+    if (nh.getParam("batch_period", pub_rate) && pub_rate > 0.) {
+        batching_ptr.reset(new BatchingPublisher("gaze_data", connection, ros::Duration(pub_rate)));
+        batching_ptr->doSetup();
+    } else {
+        basic_ptr.reset(new BasicPublisher("gaze_data", connection));
+        basic_ptr->doSetup();
+    }
     
     // process ros stuff in a separate thread as tobii stuff, just in case
     ros::AsyncSpinner spinner(1);
