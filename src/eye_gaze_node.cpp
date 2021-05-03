@@ -1,5 +1,5 @@
 #include "EyeGazeNode.hpp"
-
+#include "tobii_bar_node/CalibrationInfoSrv.h"
 
 BasicPublisher::BasicPublisher(std::string const & topic_name, TobiiConnection & connection) :
             nh(),
@@ -171,6 +171,56 @@ ros::Time TobiiConnection::getSystemTime() {
     return tobiiTimeToRos(time);
 }
 
+tobii_bar_node::CalibrationInfo TobiiConnection::getCalibrationInfo() {
+    std::vector<char> data;
+    tobii_error_t error = tobii_calibration_retrieve(this->device, &TobiiConnection::receiveCalibrationInfo, &data);
+    if ( error != TOBII_ERROR_NO_ERROR) {
+        ROS_ERROR_STREAM("failed to get calibration data time: " << tobii_error_message(error));
+        throw TobiiException(error);
+    }
+
+    tobii_bar_node::CalibrationInfo calibration_info;
+    error = tobii_get_state_uint32(this->device, TOBII_STATE_CALIBRATION_ID, &calibration_info.calibration_id);
+    if ( error != TOBII_ERROR_NO_ERROR) {
+        ROS_ERROR_STREAM("failed to retrieve calibration id time: " << tobii_error_message(error));
+        throw TobiiException(error);
+    }
+
+    error = tobii_calibration_parse(this->api, data.data(), data.size(), &TobiiConnection::parseCalibrationInfo, &calibration_info);
+    if ( error != TOBII_ERROR_NO_ERROR) {
+        ROS_ERROR_STREAM("failed to parse calibration data time: " << tobii_error_message(error));
+        throw TobiiException(error);
+    }
+
+    return calibration_info;
+}
+
+uint8_t convert_calibration_point_status(tobii_calibration_point_status_t status) {
+    switch (status) {
+        case TOBII_CALIBRATION_POINT_STATUS_FAILED_OR_INVALID:
+            return tobii_bar_node::CalibrationInfo::TOBII_CALIBRATION_POINT_STATUS_FAILED_OR_INVALID;
+        case TOBII_CALIBRATION_POINT_STATUS_VALID_BUT_NOT_USED_IN_CALIBRATION:
+            return tobii_bar_node::CalibrationInfo::TOBII_CALIBRATION_POINT_STATUS_VALID_BUT_NOT_USED_IN_CALIBRATION;
+        case TOBII_CALIBRATION_POINT_STATUS_VALID_AND_USED_IN_CALIBRATION:
+            return tobii_bar_node::CalibrationInfo::TOBII_CALIBRATION_POINT_STATUS_VALID_AND_USED_IN_CALIBRATION;
+        default:
+            return tobii_bar_node::CalibrationInfo::TOBII_CALIBRATION_POINT_STATUS_UNKNOWN;
+    }
+}
+
+void TobiiConnection::parseCalibrationInfo(tobii_calibration_point_data_t const* point_data, void* user_data) {
+    tobii_bar_node::CalibrationInfo * const calibration_info_ptr = static_cast<tobii_bar_node::CalibrationInfo *>(user_data);
+    geometry_msgs::Point screen_point; screen_point.x = point_data->point_xy[0]; screen_point.y = point_data->point_xy[1];
+    calibration_info_ptr->screen_point.push_back(screen_point);
+
+    calibration_info_ptr->left_status.push_back(convert_calibration_point_status(point_data->left_status));
+    geometry_msgs::Point left_point; left_point.x = point_data->point_xy[0]; left_point.y = point_data->point_xy[1];
+    calibration_info_ptr->left_points.push_back(left_point);
+
+    calibration_info_ptr->right_status.push_back(convert_calibration_point_status(point_data->right_status));
+    geometry_msgs::Point right_point; right_point.x = point_data->point_xy[0]; right_point.y = point_data->point_xy[1];
+    calibration_info_ptr->right_points.emplace_back(right_point);
+}
 
 int main(int argc, char* argv[]) {
     // init ROS node
@@ -192,6 +242,18 @@ int main(int argc, char* argv[]) {
         basic_ptr->doSetup();
     }
     
+    ros::ServiceServer calibration_server = nh.advertiseService<tobii_bar_node::CalibrationInfoSrv::Request, tobii_bar_node::CalibrationInfoSrv::Response>("get_calibration_info",
+        [&connection] (tobii_bar_node::CalibrationInfoSrv::Request const & req, tobii_bar_node::CalibrationInfoSrv::Response & resp) {
+            try {
+                resp.calibration_info = connection.getCalibrationInfo();
+                resp.ok = true;
+            } catch (TobiiException & ex) {
+                resp.ok = false;
+                resp.msg = ex.what();
+            }
+            return true;
+        });
+
     // process ros stuff in a separate thread as tobii stuff, just in case
     ros::AsyncSpinner spinner(1);
     spinner.start();

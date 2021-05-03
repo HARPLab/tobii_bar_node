@@ -1,4 +1,5 @@
 #include <tobii/tobii.h>
+#include <tobii/tobii_config.h>
 #include <tobii/tobii_streams.h>
 
 #include <string>
@@ -13,6 +14,7 @@
 #include "ros/ros.h"
 #include "ros/console.h"
 #include "ibmmpy/GazeData.h"
+#include "tobii_bar_node/CalibrationInfo.h"
 
 #ifndef __EYEGAZENODE_HPP__
 #define __EYEGAZENODE_HPP__
@@ -50,6 +52,8 @@ struct TobiiConnection {
         void runOnce();
         ros::Time getSystemTime();
 
+        tobii_bar_node::CalibrationInfo getCalibrationInfo();
+
     private:
         inline static void dataCallbackCaller(tobii_gaze_point_t const * data, void * user_data) {
             static_cast<TobiiConnection *>(user_data)->dataCallback(*data);
@@ -61,6 +65,10 @@ struct TobiiConnection {
                 this->callback(recv_time, data);
             } 
         }
+        inline static void receiveCalibrationInfo(void const* data, size_t size, void* user_data) {
+            static_cast<std::vector<char> *>(user_data)->assign(static_cast<char const *>(data), static_cast<char const *>(data)+size);
+        }
+        static void parseCalibrationInfo(tobii_calibration_point_data_t const* point_data, void* user_data);
 
 
         std::string url;
