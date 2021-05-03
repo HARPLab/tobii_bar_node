@@ -1,0 +1,4 @@
+---
+bool ok
+string msg
+tobii_bar_node/CalibrationInfo calibration_info
