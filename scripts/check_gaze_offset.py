@@ -6,9 +6,9 @@ import rospy
 
 import ibmmpy.msg
 
-TARGET_THRESHOLD = 0.05 # frac of screen size to say we're looking at the point
+TARGET_THRESHOLD = 0.15 # frac of screen size to say we're looking at the point
 TARGET_NUM_SAMPLES = 180   # num of consecutive static points to id as target
-TARGET_VARIANCE = 0.01 # allowed variance within on-target points
+TARGET_VARIANCE = 0.015 # allowed variance within on-target points
 
 def get_point_from_norm(pt, frame):
     return (int(pt[0] * frame.shape[1]), int(pt[1] * frame.shape[0]))
@@ -31,12 +31,12 @@ class DataCollector:
         if not self._started:
             # see if any of the points are within the start time
             dists = np.linalg.norm(pts - self._pt, axis=1)
-            if np.all(dists > TARGET_THRESHOLD):
-                return
 
             outside_pts = np.flatnonzero(dists > TARGET_THRESHOLD)
             if outside_pts.size == 0:
                 first_ok_pt = 0
+            elif outside_pts[-1] == pts.shape[0]-1:
+                return
             else:
                 first_ok_pt = outside_pts[-1]+1
 
@@ -49,7 +49,6 @@ class DataCollector:
             last_ok_idx = -1
             for idx in range(pts.shape[0]):
                 # premature optimization is the root of all evil
-                rospy.loginfo("var: {}".format(np.std(np.vstack((self._data, pts[:idx+1, :])), axis=0)))
                 if np.any(np.std(np.vstack((self._data, pts[:idx+1, :])), axis=0) > TARGET_VARIANCE):
                     last_ok_idx = idx
             if last_ok_idx == -1:
@@ -60,7 +59,7 @@ class DataCollector:
                 self._data = np.vstack((self._data, pts[:last_ok_idx,:]))
                 # we're done collecting data for now
                 self._started = False
-            
+
             if self._data.shape[0] >= TARGET_NUM_SAMPLES:
                 self._started = True
                 self._finished = True
@@ -79,7 +78,7 @@ class DataCollector:
     def draw_not_started(self, frame):
         cv2.circle(frame, get_point_from_norm(self._pt, frame), 10, (255, 0, 0), -1)
         if self._debug:
-            cv2.ellipse(frame, get_point_from_norm(self._pt, frame), 
+            cv2.ellipse(frame, get_point_from_norm(self._pt, frame),
                 get_point_from_norm((TARGET_THRESHOLD, TARGET_THRESHOLD), frame),
                 0, 0., 360., (255, 255, 255), 1)
 
@@ -132,25 +131,35 @@ class CalibrationRunner:
 
         self._last_data_time = None
         self._display_timer = rospy.Timer(rospy.Duration.from_sec(0.033), self._display, oneshot=False)
+        self._debug = debug
+        self._last_gaze_msg = None
+        self._finished = False
 
     def _receive_gaze(self, msg):
         if len(msg.world_data) > 0:
             self._last_data_time = msg.header.stamp
             data = np.array( [ [ p.position.x, p.position.y ] for p in msg.world_data ] )
+            self._last_gaze_msg = data[-1,:].copy()
             for c in self._collectors:
                 c.receive_observation(data)
 
             if all((c.is_finished() for c in self._collectors)):
-                self._finished_callback(self._collectors, self._image_sink)
+                self._finished = True
 
     def _display(self, evt):
-        # check staleness
-        if self._last_data_time is not None and (evt.current_real - self._last_data_time) > NO_GAZE_WARNING_TIME:
-            rospy.logwarn_throttle(1., "No gaze data received for {:.03f} sec".format((evt.current_real - self._last_data_time).to_sec()))
-        frame = self._image_sink.get_empty()
-        for c in self._collectors:
-            c.draw(frame)
-        self._image_sink.draw(frame)
+        if not self._finished:
+            # check staleness
+            if self._last_data_time is not None and (evt.current_real - self._last_data_time) > NO_GAZE_WARNING_TIME:
+                rospy.logwarn_throttle(1., "No gaze data received for {:.03f} sec".format((evt.current_real - self._last_data_time).to_sec()))
+            frame = self._image_sink.get_empty()
+            if self._debug and self._last_gaze_msg is not None:
+                cv2.circle(frame, get_point_from_norm(self._last_gaze_msg, frame), 8, (0, 255, 255), -1)
+            for c in self._collectors:
+                c.draw(frame)
+            self._image_sink.draw(frame)
+        else:
+            self._display_timer.shutdown()
+            self._finished_callback(self._collectors, self._image_sink)
 
 def make_gaze_source_factory(topic):
     def make_gaze_source(cb):
@@ -175,28 +184,24 @@ class ImageDisplay:
         cv2.imshow(ImageDisplay.WINDOW_NAME, frame)
         cv2.waitKey(1)
 
-def display_results(self, collectors, image_sink):
+def display_results(collectors, image_sink):
     frame = image_sink.get_empty()
     for c in collectors:
         c.draw_results(frame)
-        print("{}: {:.4f}".format(tuple(c._pt), c.get_offset()))
-    
+        print("{}: ({:.04f}, {:.04f})".format(tuple(c._pt), *c.get_offset()))
+
     offsets = [c.get_offset() for c in collectors]
     print("Total offset: ({:.4f}, {:.4f})".format(*np.mean(offsets, axis=0)))
 
     image_sink.draw(frame)
-    cv2.waitKey(-1)
-    rospy.shutdown()
-
 
 DEFAULT_CHECK_POINTS = [
-    [ 0.05, 0.05 ],
-    [ 0.95, 0.05 ],
-    [ 0.95, 0.95 ],
-    [ 0.05, 0.95 ],
-    [ 0.30, 0.50 ],
-    [ 0.70, 0.50 ]
-]
+    [ 0.1, 0.1 ],
+    [ 0.9, 0.1 ],
+    [ 0.9, 0.8 ],
+    [ 0.1, 0.8 ],
+    [ 0.3, 0.5 ],
+    [ 0.7, 0.5 ]]
 
 def main():
     rospy.init_node("check_gaze_offset", anonymous=True)
@@ -215,11 +220,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
 
-
-            
-            
-    
 
 
