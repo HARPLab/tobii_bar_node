@@ -1,0 +1,8 @@
+
+geometry_msgs/Point[] screen_points
+string gaze_topic
+bool debug
+---
+geometry_msgs/Point average_offset
+tobii_bar_node/OffsetData[] data
+---

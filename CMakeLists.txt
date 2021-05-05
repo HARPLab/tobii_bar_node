@@ -10,6 +10,9 @@ add_compile_options(-std=c++11)
 find_package(catkin REQUIRED COMPONENTS
   roscpp
   ibmmpy
+  actionlib
+  geometry_msgs
+  message_generation
 )
 
 ## System dependencies are found with CMake's conventions
@@ -48,6 +51,7 @@ find_package(Boost REQUIRED COMPONENTS system)
 add_message_files(
   FILES
   CalibrationInfo.msg
+  OffsetData.msg
 )
 
 ## Generate services in the 'srv' folder
@@ -57,16 +61,16 @@ add_service_files(
 )
 
 ## Generate actions in the 'action' folder
-# add_action_files(
-#   FILES
-#   Action1.action
-#   Action2.action
-# )
+add_action_files(
+  FILES
+  ComputeGazeOffset.action
+)
 
 # Generate added messages and services with any dependencies listed here
 generate_messages(
   DEPENDENCIES
   geometry_msgs
+  actionlib_msgs
 )
 
 ################################################

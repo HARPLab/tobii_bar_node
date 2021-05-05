@@ -1,10 +1,15 @@
 #!/usr/bin/env python
 
+import actionlib
 import cv2
+import cv_bridge
+import geometry_msgs.msg
 import numpy as np
 import rospy
+import sensor_msgs.msg
 
 import ibmmpy.msg
+import tobii_bar_node.msg
 
 TARGET_THRESHOLD = 0.15 # frac of screen size to say we're looking at the point
 TARGET_NUM_SAMPLES = 180   # num of consecutive static points to id as target
@@ -68,6 +73,9 @@ class DataCollector:
                 # we broke the collection, so restart
                 self._data = np.empty((0,2))
                 rospy.loginfo("({:.2f}, {:.2f}): Data broken, clearing".format(*self._pt))
+
+    def get_screen_point(self):
+        return tuple(self._pt)
 
     def get_data(self):
         if self._finished:
@@ -161,6 +169,10 @@ class CalibrationRunner:
             self._display_timer.shutdown()
             self._finished_callback(self._collectors, self._image_sink)
 
+    def cancel(self):
+        self._display_timer.shutdown()
+        self._gaze_source.unregister()
+
 def make_gaze_source_factory(topic):
     def make_gaze_source(cb):
         return rospy.Subscriber(topic, ibmmpy.msg.GazeData, cb, queue_size=1)
@@ -184,6 +196,10 @@ class ImageDisplay:
         cv2.imshow(ImageDisplay.WINDOW_NAME, frame)
         cv2.waitKey(1)
 
+    def close(self):
+        cv2.destroyWindow(ImageDisplay.WINDOW_NAME)
+        self._initialized = False
+
 def display_results(collectors, image_sink):
     frame = image_sink.get_empty()
     for c in collectors:
@@ -195,27 +211,95 @@ def display_results(collectors, image_sink):
 
     image_sink.draw(frame)
 
-DEFAULT_CHECK_POINTS = [
-    [ 0.1, 0.1 ],
-    [ 0.9, 0.1 ],
-    [ 0.9, 0.8 ],
-    [ 0.1, 0.8 ],
-    [ 0.3, 0.5 ],
-    [ 0.7, 0.5 ]]
+DEFAULT_CHECK_POINTS = (
+    ( 0.1, 0.1 ),
+    ( 0.9, 0.1 ),
+    ( 0.9, 0.8 ),
+    ( 0.1, 0.8 ),
+    ( 0.3, 0.5 ),
+    ( 0.7, 0.5 )
+)
+
+def _make_point(p):
+    pt = geometry_msgs.msg.Point()
+    pt.x, pt.y = p
+    return pt
+
+class CheckGazeOffsetActionServer:
+    def __init__(self):
+        self._server = actionlib.SimpleActionServer("~compute", tobii_bar_node.msg.ComputeGazeOffsetAction, auto_start=False)
+        self._server.register_goal_callback(self._execute_goal)
+        self._server.register_preempt_callback(self._do_preempt)
+        self._runner = None
+        self._server.start()
+        rospy.loginfo("Waiting for goal")
+
+    def _execute_goal(self):
+        if self._runner is not None:
+            self._runner.cancel()
+
+        goal = self._server.accept_new_goal()
+        rospy.loginfo("Got goal: {}".format(goal))
+
+        try:
+            if len(goal.screen_points) > 0:
+                points = [ [p.x, p.y] for p in goal.screen_points ]
+            else:
+                points = DEFAULT_CHECK_POINTS
+            self._runner = CalibrationRunner(
+                points,
+                make_gaze_source_factory(goal.gaze_topic),
+                ImageDisplay(),
+                self._finish,
+                goal.debug
+            )
+            rospy.loginfo("Goal started")
+        except Exception as ex:
+            self._server.set_aborted(text=str(ex))
+            rospy.logwarn("Goal failed to start: {}".format(ex))
+
+    def _do_preempt(self):
+        self._runner.cancel()
+        self._runner = None
+        self._server.set_preempted()
+        rospy.loginfo("Goal preempted")
+
+    def _finish(self, collectors, image_sink):
+        image_sink.close()
+
+        result = tobii_bar_node.msg.ComputeGazeOffsetResult()
+
+        offsets = [c.get_offset() for c in collectors]
+        result.average_offset = _make_point(np.mean(offsets, axis=0))
+        for c in collectors:
+            offset_data = tobii_bar_node.msg.OffsetData(
+                screen_point=_make_point(c.get_screen_point()),
+                data_points=[ _make_point(p) for p in c.get_data() ]
+            )
+            result.data.append(offset_data)
+        
+        self._server.set_succeeded(result=result)
+        rospy.loginfo("Goal succeeded with result\n{}".format(result))
+
+
+# def main():
+#     rospy.init_node("check_gaze_offset", anonymous=True)
+#     gaze_topic = rospy.get_param("~gaze_topic", "/gaze_data")
+#     points = rospy.get_param("~points", DEFAULT_CHECK_POINTS)
+#     debug = rospy.get_param("~debug", False)
+#     print(debug)
+#     if rospy.get_param("publish_image", False):
+#         raise NotImplementedError()
+#     else:
+#         image_sink = ImageDisplay()
+
+#     runner = CalibrationRunner(points, make_gaze_source_factory(gaze_topic), image_sink, display_results, debug=debug)
+
+#     rospy.spin()
 
 def main():
-    rospy.init_node("check_gaze_offset", anonymous=True)
-    gaze_topic = rospy.get_param("~gaze_topic", "/gaze_data")
-    points = rospy.get_param("~points", DEFAULT_CHECK_POINTS)
-    debug = rospy.get_param("~debug", False)
-    print(debug)
-    if rospy.get_param("publish_image", False):
-        raise NotImplementedError()
-    else:
-        image_sink = ImageDisplay()
-
-    runner = CalibrationRunner(points, make_gaze_source_factory(gaze_topic), image_sink, display_results, debug=debug)
-
+    rospy.init_node("compute_gaze_offset")
+    server = CheckGazeOffsetActionServer()
     rospy.spin()
 
 if __name__ == "__main__":
