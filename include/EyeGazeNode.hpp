@@ -15,6 +15,7 @@
 #include "ros/console.h"
 #include "ibmmpy/GazeData.h"
 #include "tobii_bar_node/CalibrationInfo.h"
+#include "tobii_bar_node/SetOffset.h"
 
 #ifndef __EYEGAZENODE_HPP__
 #define __EYEGAZENODE_HPP__
@@ -80,10 +81,27 @@ struct TobiiConnection {
         bool is_registered;
 };
 
+struct OffsetManager {
+    public:
+        typedef std::array<double, 2> OffsetType;
+        OffsetManager(std::string const & service_name, ros::NodeHandle nh = ros::NodeHandle());
+
+        OffsetType get() const;
+
+    private:
+        mutable boost::mutex mutex;
+
+        ros::ServiceServer service_server;
+        OffsetType _offset;
+
+        // ros can't deduce types if the request is a const reference :(
+        bool updateOffset(tobii_bar_node::SetOffset::Request & req, tobii_bar_node::SetOffset::Response & resp);
+};
+
 struct BasicPublisher {
     public:
 
-        BasicPublisher(std::string const & topic_name, TobiiConnection & connection);
+        BasicPublisher(std::string const & topic_name, TobiiConnection & connection, OffsetManager & offset_manager);
 
         // we don't have access to this in the constructor
         // so make this a separate function :(
@@ -97,6 +115,7 @@ struct BasicPublisher {
         ros::NodeHandle nh;
         ros::Publisher pub;
         TobiiConnection & connection;
+        OffsetManager & offset_manager;
 };
 
 struct BatchingPublisher {
@@ -104,7 +123,7 @@ struct BatchingPublisher {
         typedef std::pair<ros::Time, tobii_gaze_point_t>  MessageType;
         typedef std::deque<MessageType> QueueType;
 
-        BatchingPublisher(std::string const &topic_name, TobiiConnection &connection, ros::Duration const & batch_rate);
+        BatchingPublisher(std::string const &topic_name, TobiiConnection & connection, OffsetManager & offset_manager, ros::Duration const & batch_rate);
 
         // we don't have access to this in the constructor
         // so make this a separate function :(
@@ -119,10 +138,11 @@ struct BatchingPublisher {
     private:
         ros::NodeHandle nh;
         ros::Publisher pub;
-        TobiiConnection &connection;
+        TobiiConnection & connection;
+        OffsetManager & offset_manager;
 
         boost::mutex cache_mutex;
-        boost::scoped_ptr<QueueType> cache_ptr;
+        QueueType cache;
         ros::Duration rate;
         ros::Timer timer;
 };

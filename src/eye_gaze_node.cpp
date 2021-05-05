@@ -1,46 +1,80 @@
 #include "EyeGazeNode.hpp"
 #include "tobii_bar_node/CalibrationInfoSrv.h"
 
-BasicPublisher::BasicPublisher(std::string const & topic_name, TobiiConnection & connection) :
+OffsetManager::OffsetManager(std::string const & service_name, ros::NodeHandle nh) :
+    service_server(nh.advertiseService("set_offset", &OffsetManager::updateOffset, this)),
+    _offset{0., 0.} {}
+
+std::array<double, 2> OffsetManager::get() const {
+    boost::lock_guard<boost::mutex>(this->mutex);
+    return this->_offset;
+}
+
+bool OffsetManager::updateOffset(tobii_bar_node::SetOffset::Request & req, tobii_bar_node::SetOffset::Response & resp) {
+    if (req.offset.x == this->_offset[0] && req.offset.y == this->_offset[0]) {
+        // no-op
+        resp.ok = true;
+        return true;
+    } else {
+        boost::lock_guard<boost::mutex>(this->mutex);
+        this->_offset[0] = req.offset.x;
+        this->_offset[1] = req.offset.y;
+        resp.ok = true;
+        return true;
+    }
+}
+
+BasicPublisher::BasicPublisher(std::string const & topic_name, TobiiConnection & connection, OffsetManager & offset_manager) :
             nh(),
             pub(nh.advertise<ibmmpy::GazeData>(topic_name, 1)),
-            connection(connection) {}
+            connection(connection),
+            offset_manager(offset_manager) {}
 
 void BasicPublisher::processData(ros::Time const & recv_time, tobii_gaze_point_t const & gaze_point) {
+    OffsetManager::OffsetType offset = this->offset_manager.get();
+
     ibmmpy::GazeData msg;
     msg.header.stamp = recv_time;
+    msg.applied_offset.x = offset[0];
+    msg.applied_offset.y = offset[1];
     msg.world_data.push_back(ibmmpy::GazeDataPoint());
     msg.world_data[0].header.stamp = recv_time;
-    msg.world_data[0].position.x = gaze_point.position_xy[0];
-    msg.world_data[0].position.y = gaze_point.position_xy[1];
+    msg.world_data[0].position.x = gaze_point.position_xy[0] + offset[0];
+    msg.world_data[0].position.y = gaze_point.position_xy[1] + offset[1];
     msg.world_data[0].confidence = 1.0; // doesn't seem to be a way to get a confidence flag, and we're already filtering validity
     this->pub.publish(msg);
 }
 
-BatchingPublisher::BatchingPublisher(std::string const &topic_name, TobiiConnection &connection, ros::Duration const & batch_rate) : nh(),
+BatchingPublisher::BatchingPublisher(std::string const &topic_name, TobiiConnection & connection, OffsetManager & offset_manager, ros::Duration const & batch_rate) : nh(),
             pub(nh.advertise<ibmmpy::GazeData>(topic_name, 1)),
-            connection(connection), cache_ptr(new BatchingPublisher::QueueType()), rate(batch_rate) {}
+            connection(connection), offset_manager(offset_manager), 
+            cache(), rate(batch_rate) {}
 
 void BatchingPublisher::processData(ros::Time const &recv_time, tobii_gaze_point_t const &gaze_point) {
     boost::lock_guard<boost::mutex>(this->cache_mutex);
-    this->cache_ptr->push_back(std::make_pair(recv_time, gaze_point));
+    this->cache.push_back(std::make_pair(recv_time, gaze_point));
 }
 void BatchingPublisher::sendMessage(ros::TimerEvent const & e) {
     // grab the current cache -- just transfer ownership to this thread and leave the other an empty queue
-    boost::scoped_ptr<QueueType> current_cache(new QueueType());
+    QueueType current_cache;
     {
         boost::lock_guard<boost::mutex>(this->cache_mutex);
-        current_cache.swap(this->cache_ptr);
+        current_cache.swap(this->cache);
     }
 
     // now actually set up the message
+    OffsetManager::OffsetType offset = this->offset_manager.get();
+
     ibmmpy::GazeData msg;
     msg.header.stamp = e.current_real;
-    std::transform(current_cache->begin(), current_cache->end(), std::back_inserter(msg.world_data), [] (MessageType const & msg) {
+    msg.applied_offset.x = offset[0];
+    msg.applied_offset.y = offset[1];
+    std::transform(current_cache.begin(), current_cache.end(), std::back_inserter(msg.world_data), 
+        [&offset] (MessageType const & msg) {
         ibmmpy::GazeDataPoint data_point;
         data_point.header.stamp = msg.first;
-        data_point.position.x = msg.second.position_xy[0];
-        data_point.position.y = msg.second.position_xy[1];
+        data_point.position.x = msg.second.position_xy[0] + offset[0];
+        data_point.position.y = msg.second.position_xy[1] + offset[1];
         data_point.confidence = 1.0;
         return data_point;
     });
@@ -228,6 +262,7 @@ int main(int argc, char* argv[]) {
     ros::NodeHandle nh("~");
 
     TobiiConnection connection;
+    OffsetManager offset_manager("set_offset", nh);
 
     // apparently i forgot how to scope c++ in a way that doesn't suck
     boost::scoped_ptr<BasicPublisher> basic_ptr;
@@ -235,10 +270,10 @@ int main(int argc, char* argv[]) {
 
     double pub_rate;
     if (nh.getParam("batch_period", pub_rate) && pub_rate > 0.) {
-        batching_ptr.reset(new BatchingPublisher("gaze_data", connection, ros::Duration(pub_rate)));
+        batching_ptr.reset(new BatchingPublisher("gaze_data", connection, offset_manager, ros::Duration(pub_rate)));
         batching_ptr->doSetup();
     } else {
-        basic_ptr.reset(new BasicPublisher("gaze_data", connection));
+        basic_ptr.reset(new BasicPublisher("gaze_data", connection, offset_manager));
         basic_ptr->doSetup();
     }
     
