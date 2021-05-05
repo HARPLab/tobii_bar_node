@@ -5,8 +5,13 @@ import cv2
 import cv_bridge
 import geometry_msgs.msg
 import numpy as np
+try:
+    import Queue as queue
+except ImportError:
+    import queue
 import rospy
 import sensor_msgs.msg
+import threading
 
 import ibmmpy.msg
 import tobii_bar_node.msg
@@ -103,7 +108,10 @@ class DataCollector:
         cv2.ellipse(frame, get_point_from_norm(self._pt, frame), (13, 13), 0, 0., 360.*progress, (0, 0, 255), 2)
 
         if self._debug:
-            center_pt = np.mean(self._data, axis=0)
+            try:
+                center_pt = np.mean(self._data, axis=0)
+            except ValueError:
+                return
             for p in self._data:
                 cv2.circle(frame, get_point_from_norm(p, frame), 1, (0, 255, 255), -1)
             cv2.circle(frame, get_point_from_norm(center_pt, frame), 5, (0, 255, 255), -1)
@@ -172,6 +180,7 @@ class CalibrationRunner:
     def cancel(self):
         self._display_timer.shutdown()
         self._gaze_source.unregister()
+        self._image_sink.close()
 
 def make_gaze_source_factory(topic):
     def make_gaze_source(cb):
@@ -179,26 +188,53 @@ def make_gaze_source_factory(topic):
     return make_gaze_source
 
 class ImageDisplay:
-    WINDOW_NAME = "gaze_checker"
+    class _Command:
+        STOP = 1
+        CLOSE = 2
+        def __init__(self, cmd):
+            self.cmd = cmd
+
     def __init__(self):
-        self._initialized = False
+        # let's hack this terrible thing to make it all in the same thread! boo
+        self._queue = queue.LifoQueue()
+        self._thread = threading.Thread(target=self._run)
+        self._thread.daemon = True
+        self._thread.start()
 
     def get_empty(self):
         return np.zeros((720, 1280, 3), dtype=np.uint8)
 
-    def draw(self, frame):
-        if not self._initialized:
-            # have to initialize window in *same* thread as displaying so can't do it in __init__
-            cv2.namedWindow(ImageDisplay.WINDOW_NAME, cv2.WINDOW_GUI_NORMAL | cv2.WINDOW_FREERATIO)
-            cv2.setWindowProperty(ImageDisplay.WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-            self._initialized = True
+    def _run(self):
+        initialized = False
+        window_name = "."
+        while True:
+            next_item = self._queue.get(block=True)
+            if isinstance(next_item, ImageDisplay._Command):
+                if next_item.cmd == ImageDisplay._Command.CLOSE:
+                    cv2.destroyAllWindows()
+                    initialized = False
+                elif next_item.cmd == ImageDisplay._Command.STOP:
+                    cv2.destroyAllWindows()
+                    return
+                else:
+                    rospy.logwarn("Unknown command: {}".format(next_item.cmd))
+            else:
+                if not initialized:
+                    cv2.namedWindow(window_name, cv2.WINDOW_GUI_NORMAL | cv2.WINDOW_FREERATIO)
+                    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+                    initialized = True
+                cv2.imshow(window_name, next_item)
+                cv2.waitKey(1)
 
-        cv2.imshow(ImageDisplay.WINDOW_NAME, frame)
-        cv2.waitKey(1)
+    def draw(self, frame):
+        self._queue.put(frame)
 
     def close(self):
-        cv2.destroyWindow(ImageDisplay.WINDOW_NAME)
-        self._initialized = False
+        self._queue.put(ImageDisplay._Command(ImageDisplay._Command.CLOSE))
+
+    def __del__(self):
+        self._queue.put(ImageDisplay._Command(ImageDisplay._Command.STOP))
+        self._thread.join()
 
 def display_results(collectors, image_sink):
     frame = image_sink.get_empty()
@@ -212,10 +248,10 @@ def display_results(collectors, image_sink):
     image_sink.draw(frame)
 
 DEFAULT_CHECK_POINTS = (
-    ( 0.1, 0.1 ),
-    ( 0.9, 0.1 ),
-    ( 0.9, 0.8 ),
-    ( 0.1, 0.8 ),
+    ( 0.2, 0.2 ),
+    ( 0.8, 0.2 ),
+    ( 0.8, 0.75 ),
+    ( 0.2, 0.75 ),
     ( 0.3, 0.5 ),
     ( 0.7, 0.5 )
 )
@@ -231,6 +267,7 @@ class CheckGazeOffsetActionServer:
         self._server.register_goal_callback(self._execute_goal)
         self._server.register_preempt_callback(self._do_preempt)
         self._runner = None
+        self._display = ImageDisplay()
         self._server.start()
         rospy.loginfo("Waiting for goal")
 
@@ -249,7 +286,7 @@ class CheckGazeOffsetActionServer:
             self._runner = CalibrationRunner(
                 points,
                 make_gaze_source_factory(goal.gaze_topic),
-                ImageDisplay(),
+                self._display,
                 self._finish,
                 goal.debug
             )
@@ -265,7 +302,13 @@ class CheckGazeOffsetActionServer:
         rospy.loginfo("Goal preempted")
 
     def _finish(self, collectors, image_sink):
-        image_sink.close()
+        if self._runner._debug:
+            frame = image_sink.get_empty()
+            for c in collectors:
+                c.draw_results(frame)
+            image_sink.draw(frame)
+        else:
+            image_sink.close()
 
         result = tobii_bar_node.msg.ComputeGazeOffsetResult()
 
@@ -277,9 +320,9 @@ class CheckGazeOffsetActionServer:
                 data_points=[ _make_point(p) for p in c.get_data() ]
             )
             result.data.append(offset_data)
-        
+
         self._server.set_succeeded(result=result)
-        rospy.loginfo("Goal succeeded with result\n{}".format(result))
+        rospy.loginfo("Goal succeeded with offset {}".format(result.average_offset))
 
 
 # def main():

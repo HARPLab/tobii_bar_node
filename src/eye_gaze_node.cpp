@@ -11,15 +11,18 @@ std::array<double, 2> OffsetManager::get() const {
 }
 
 bool OffsetManager::updateOffset(tobii_bar_node::SetOffset::Request & req, tobii_bar_node::SetOffset::Response & resp) {
-    if (req.offset.x == this->_offset[0] && req.offset.y == this->_offset[0]) {
+    if (req.offset.x == this->_offset[0] && req.offset.y == this->_offset[1]) {
         // no-op
         resp.ok = true;
+        ROS_INFO_STREAM("No offset change current=(" << this->_offset[0] << ", " << this->_offset[1] << "), "
+                   << "req=(" << req.offset.x << ", " << req.offset.y << ")");
         return true;
     } else {
         boost::lock_guard<boost::mutex>(this->mutex);
         this->_offset[0] = req.offset.x;
         this->_offset[1] = req.offset.y;
         resp.ok = true;
+        ROS_INFO_STREAM("Set offset to (" << this->_offset[0] << ", " << this->_offset[1] << ")");
         return true;
     }
 }
